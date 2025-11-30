@@ -1,0 +1,179 @@
+# Phase 1: Collect and Clean Data
+
+### Step 1: Load libraries
+```{r load-libraries, message=FALSE}
+# guidance from https://cran.r-project.org/web/packages/heatwaveR/vignettes/OISST_preparation.html
+
+# install the following packages if not already installed: dplyr, lubridate, ggplot2, tidync, doParallel, rerddap, plyr
+
+library(dplyr) # A staple for modern data management in R
+library(lubridate) # Useful functions for dealing with dates
+library(ggplot2) # The preferred library for data visualisation
+library(tidync) # For easily dealing with NetCDF data
+library(rerddap) # For easily downloading subsets of data
+library(doParallel) # For parallel processing
+library(maps) # for plotting maps
+```
+
+### Step 2: Load data
+
+Downloading HURDAT2 data:
+```{r load-hurdat, message=FALSE}
+
+# raw text data 
+data <- read.csv("data/hurdat2.txt", header = F)
+
+# create id and name columns 
+data$id <- NA
+data$name <- NA
+
+# extract id and name info 
+for(j in 1:nrow(data)){
+  if(substr(data$V1[j],1,2)=="AL"){
+    data$id[j] <- data$V1[j]
+    data$name[j] <- data$V2[j]
+  } else {
+    data$id[j] <- data$id[j-1]
+    data$name[j] <- data$name[j-1]
+  }
+}
+
+# remove AL string 
+data <- data[substr(data$V1,1,2) != "AL",]
+
+# add a date column 
+data$date <- as.Date(data$V1, format="%Y%m%d" )
+
+# add a datetime column
+data$time <- substr(data$V2, 1, 4)
+data$datetime <- as.POSIXct(paste(data$date, data$time), format="%Y-%m-%d %H%M", tz="UTC") # with AI
+
+# add a year column
+data$year <- as.numeric(format(data$date, "%Y")) 
+
+# remove white space from V4
+data$V3 <- gsub(" ", "", data$V3)
+data$V4 <- gsub(" ", "", data$V4)
+data$name <- gsub(" ", "", data$name)
+
+# fix the lat and lon values
+data$V5 <- gsub(" ", "", data$V5)
+data$lat <- as.numeric(substr(data$V5, 1, nchar(data$V5)-1)) 
+data$V6 <- gsub(" ", "", data$V6)
+data$lon <- -as.numeric(substr(data$V6, 1, nchar(data$V6)-1)) 
+
+# mark value of 1 when storm makes landfall (V10 == 'L')
+data$landfall <- ifelse(data$V10 == "L", 1, 0)
+
+# name status column
+data$status <- data$V4
+
+# name max wind column
+data$max_wind <- data$V7
+
+# name min pressure column
+data$min_pressure <- data$V8
+
+# clean up columns
+data <- data %>%
+  select(id, name, date, year, datetime, lat, lon, status, max_wind, min_pressure, landfall)
+
+# filter for years starting in 1982 bc that's when the SST data starts
+data_hurdat <- data[data$year >= 1982, ]
+
+# save cleaned data as new file
+saveRDS(data_hurdat, "data/hurdat2_cleaned.rds") # has 11 variables
+write.csv(data_hurdat, "data/hurdat2_cleaned.csv", row.names = FALSE)
+
+# load and view four additional rdata files in data folder
+load("data/storm_summaries.RData") # this will dataset specifically will be used in the analysis
+load("data/storms_hurdat.RData")
+load("data/year_summaries.RData")
+load("data/yearly_hurdat.RData")
+```
+
+Downloading Optimally Interpolated Sea Surface Temperature (OISST) data:
+```{r load-SST, message=FALSE}
+# OISST data from https://www.ncei.noaa.gov/products/climate-data-records/sea-surface-temperature-optimum-interpolation
+# guidance on accessing OISST data from https://cran.r-project.org/web/packages/heatwaveR/vignettes/OISST_preparation.html
+
+# The information for the NOAA OISST data
+rerddap::info(datasetid = "ncdcOisst21Agg_LonPM180", url = "https://coastwatch.pfeg.noaa.gov/erddap/")
+
+# the analysis will look at data bound by lat 10 to 45 and lon -97.75 to -20 — this area includes where most Atlantic tropical cyclones occur
+# map("world", xlim=c(-97.75, -20), ylim=c(10, 45), fill=TRUE, col="lightgray")
+
+
+# this function downloads and prepares data based on start and end dates
+OISST_sub_dl <- function(time_df){
+  OISST_dat <- rerddap::griddap(datasetx = "ncdcOisst21Agg_LonPM180",
+                                url = "https://coastwatch.pfeg.noaa.gov/erddap/", 
+                                time = c(time_df$start, time_df$end), 
+                                zlev = c(0, 0),
+                                # latitude = c(7.25, 62.5),
+                                # longitude = c(-97.75, -1.5),
+                                latitude = c(10, 45),
+                                longitude = c(-97.75, -20),
+                                # fields = c("sst"))$data |> 
+                                fields = c("sst", "anom"))$data |> 
+    dplyr::mutate(time = base::as.Date(stringr::str_remove(time, "T12:00:00Z"))) |> 
+    dplyr::rename(t = time, sst = sst, anom = anom, lon = longitude, lat = latitude) |> 
+    dplyr::select(lon, lat, t, sst, anom) |> 
+    stats::na.omit()
+}
+
+# date download range by start and end dates per year — data starts in 1982, must be downloaded in sets of 8 years
+# dl_years <- data.frame(date_index = 1:6,
+#                        start = c("1982-01-01", "1990-01-01", 
+#                                  "1998-01-01", "2006-01-01", "2014-01-01", "2022-01-01"),
+#                        end = c("1989-12-31", "1997-12-31", 
+#                                "2005-12-31", "2013-12-31", "2021-12-31", "2025-11-28"))
+# dl_years <- data.frame(date_index = 1:1,
+#                        start = c("1982-01-01"),
+#                        end = c("1989-12-31"))
+# dl_years <- data.frame(date_index = 1:1,
+#                        start = c("1982-06-01"),
+#                        end = c("1982-11-30"))
+
+# let's update dl_years again, this time to download data from the past 40 hurricane seasons (1986-2025), June 1 to November 30 each year
+dl_years <- data.frame(date_index = 1:40,
+                       start = paste0(1985:2024, "-06-01"),
+                       end = paste0(1985:2024, "-11-30"))
+                       
+
+# download all data with one nested request; may take a while
+base::system.time(
+  OISST_data <- dl_years |> 
+    dplyr::group_by(date_index) |> 
+    dplyr::group_modify(~OISST_sub_dl(.x)) |> 
+    dplyr::ungroup() |> 
+    dplyr::select(lon, lat, t, sst, anom)
+)
+
+
+# visualize data
+OISST_data |> 
+  dplyr::filter(t == "2024-06-01") |> 
+  ggplot2::ggplot(aes(x = lon, y = lat)) +
+  ggplot2::geom_tile(aes(fill = sst)) +
+  ggplot2::scale_fill_viridis_c() +
+  ggplot2::coord_quickmap(expand = F) +
+  ggplot2::labs(x = NULL, y = NULL, fill = "SST (°C)") +
+  ggplot2::theme(legend.position = "bottom")
+
+# save as a .Rds file
+base::saveRDS(OISST_data, file = "data/OISST_data.rds")
+
+# print shape of OISST data
+print(OISST_data)
+print(dim(OISST_data))
+
+# temporarily removed SST anomalies and used only one stretch of eight years to check if the data would download with a smaller subset of the data
+
+
+
+# NEXT STEP: 1) continue following instructions for SST, 2) repeat for SST anomalies, OHC, and OHC anomalies
+
+
+
+```

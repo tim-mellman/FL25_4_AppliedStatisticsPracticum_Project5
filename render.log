@@ -1,0 +1,19 @@
+
+
+processing file: create_data.Rmd
+1/6                 
+2/6 [load-libraries]
+3/6                 
+4/6 [load-hurdat]   
+5/6                 
+6/6 [load-SST]      
+Warning messages:
+1: In attr(x, "match.length") : 'xfun::attr()' is deprecated.
+Use 'xfun::attr2()' instead.
+See help("Deprecated")
+2: In attr(x, "match.length") : 'xfun::attr()' is deprecated.
+Use 'xfun::attr2()' instead.
+See help("Deprecated")
+3: In attr(x, "match.length") : 'xfun::attr()' is deprecated.
+Use 'xfun::attr2()' instead.
+See help("Deprecated")
